@@ -1,6 +1,9 @@
 const fs = require('fs');
 const path = require('path');
 
+// Skills exposed in the app. Each needs a prompts/<name>.md file.
+const ENABLED_SKILLS = ['dsa', 'aptitude'];
+
 class PromptLoader {
   constructor() {
     this.prompts = new Map();
@@ -28,7 +31,7 @@ class PromptLoader {
       for (const file of files) {
         if (file.endsWith('.md')) {
           const skillName = path.basename(file, '.md');
-          if (skillName !== 'dsa') continue; // only keep DSA
+          if (!ENABLED_SKILLS.includes(skillName)) continue;
           const filePath = path.join(promptsDir, file);
           const promptContent = fs.readFileSync(filePath, 'utf8');
           
@@ -324,6 +327,10 @@ STRICT REQUIREMENTS:
     
     // Map common variations to standard names
     const skillMap = {
+      'aptitude': 'aptitude',
+      'wonderlic': 'aptitude',
+      'aptitude-test': 'aptitude',
+      'cognitive': 'aptitude',
       'dsa': 'dsa',
       'data-structures': 'dsa',
       'algorithms': 'dsa',
@@ -368,7 +375,7 @@ STRICT REQUIREMENTS:
     if (!this.promptsLoaded) {
       this.loadPrompts();
     }
-    return ['dsa'];
+    return [...ENABLED_SKILLS];
   }
 
   /**

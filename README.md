@@ -20,6 +20,47 @@ Real-time AI help on a stealth overlay that screen sharing cannot see. Ask by vo
 
 </div>
 
+## Este fork
+
+Fork personal de [TechyCSR/OpenCluely](https://github.com/TechyCSR/OpenCluely) con estos cambios:
+
+- **Vertex AI** como proveedor opcional (`GEMINI_PROVIDER=vertex`): las llamadas a Gemini se facturan en tu proyecto de Google Cloud con Application Default Credentials, sin API key.
+- **Skill `aptitude`** para tests tipo Wonderlic: responde primero con la opción y una línea de justificación.
+- **Selector de modelo en la barra**: Fast (sin razonamiento), Medium y Power.
+- **Historial de capturas** opcional (`SAVE_CAPTURES=true`) en `~/.OpenCluely/captures/`.
+- Arranque multiplataforma con `npm start` y `npm run start:detached` (cierra la terminal y la app sigue).
+
+### Instalación rápida
+
+Requisitos: Node.js 20 o superior, npm y, para el modo Vertex, [gcloud CLI](https://cloud.google.com/sdk/docs/install).
+
+```bash
+git clone https://github.com/patrickram99/OpenCluely.git
+cd OpenCluely
+npm install
+cp env.example .env
+```
+
+Edita `.env` y elige un proveedor:
+
+- **AI Studio** (gratis, con API key): pon tu clave en `GEMINI_API_KEY`.
+- **Vertex AI** (créditos de Google Cloud): descomenta `GEMINI_PROVIDER=vertex`, `GOOGLE_CLOUD_PROJECT=<tu-proyecto>` y `GOOGLE_CLOUD_LOCATION=global`, y autentícate una vez:
+
+```bash
+gcloud auth application-default login
+gcloud config set project <tu-proyecto>
+gcloud services enable aiplatform.googleapis.com
+npm run test-vertex
+```
+
+Arranca la app:
+
+```bash
+npm run start:detached
+```
+
+Atajos: `Ctrl+Shift+S` captura la pantalla y responde; `Ctrl+,` abre Settings. El skill y el modelo se cambian desde la barra o Settings y se guardan en `.env`. La voz (Whisper o Azure) es opcional y se configura en el asistente de primer arranque.
+
 ## Demo
 
 https://github.com/user-attachments/assets/896a7140-1e85-405d-bfbe-e05c9f3a816b

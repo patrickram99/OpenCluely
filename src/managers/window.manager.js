@@ -38,7 +38,9 @@ class WindowManager {
     
     this.windowConfigs = {
       main: {
-        width: 520,
+        // Max overlay width. The bar measures ~590px with the model preset
+        // selector (fonts loaded); resize-window clamps to this value.
+        width: 680,
         height: 35,
         useContentSize: true,
         file: 'index.html',

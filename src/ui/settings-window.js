@@ -87,7 +87,15 @@ document.addEventListener('DOMContentLoaded', () => {
         if (whisperCaptureModeSelect) whisperCaptureModeSelect.value = settings.whisperCaptureMode || 'vad';
         if (whisperResponseTargetSelect) whisperResponseTargetSelect.value = settings.whisperResponseTarget || 'both';
         if (whisperSegmentMsInput) whisperSegmentMsInput.value = settings.whisperSegmentMs || '';
-        if (geminiKeyInput) geminiKeyInput.value = settings.geminiKey || '';
+        if (geminiKeyInput) {
+            geminiKeyInput.value = settings.geminiKey || '';
+            // In Vertex AI mode auth comes from gcloud ADC; the key is optional.
+            if (settings.geminiProvider === 'vertex') {
+                geminiKeyInput.placeholder = `Not needed — Vertex AI (${settings.googleCloudProject || 'no project'}, ${settings.geminiModel || ''})`;
+            } else {
+                geminiKeyInput.placeholder = 'Enter your Google API key';
+            }
+        }
         if (windowGapInput) windowGapInput.value = settings.windowGap || '';
 
         // Set C++ as default if no coding language is specified

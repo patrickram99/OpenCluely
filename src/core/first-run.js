@@ -30,9 +30,24 @@ class FirstRunManager {
   needsOnboarding() {
     if (!fs.existsSync(this.sentinelPath)) return true;
     if (!fs.existsSync(this.envPath)) return true;
-    const content = this._readEnv();
-    const gemini = (content.GEMINI_API_KEY || '').trim();
-    return !gemini || gemini === 'your_gemini_api_key_here';
+    return !this._geminiConfigured(this._readEnv());
+  }
+
+  /**
+   * Gemini is "configured" when either an AI Studio key is present or the
+   * app runs in Vertex mode with a Google Cloud project (auth comes from
+   * Application Default Credentials, so no key is needed).
+   */
+  _geminiConfigured(env) {
+    if (this._isVertex(env)) {
+      return !!(env.GOOGLE_CLOUD_PROJECT || '').trim();
+    }
+    const gemini = (env.GEMINI_API_KEY || '').trim();
+    return !!gemini && gemini !== 'your_gemini_api_key_here';
+  }
+
+  _isVertex(env) {
+    return String(env.GEMINI_PROVIDER || '').trim().toLowerCase() === 'vertex';
   }
 
   /**
@@ -79,11 +94,12 @@ class FirstRunManager {
    */
   getStatus() {
     const env = this._readEnv();
-    const gemini = (env.GEMINI_API_KEY || '').trim();
     return {
       envExists: fs.existsSync(this.envPath),
       sentinelExists: fs.existsSync(this.sentinelPath),
-      geminiConfigured: !!gemini && gemini !== 'your_gemini_api_key_here',
+      geminiConfigured: this._geminiConfigured(env),
+      geminiProvider: this._isVertex(env) ? 'vertex' : 'studio',
+      googleCloudProject: (env.GOOGLE_CLOUD_PROJECT || '').trim(),
       azureConfigured: !!(env.AZURE_SPEECH_KEY || '').trim() && !!(env.AZURE_SPEECH_REGION || '').trim(),
       whisperConfigured: !!(env.WHISPER_COMMAND || '').trim(),
       needsOnboarding: this.needsOnboarding()

@@ -15,10 +15,50 @@ class LLMService {
   }
 
   initializeClient() {
+    const gemini = config.refreshGeminiSettings();
+    this.provider = gemini.provider;
+    this.vertex = null;
+    this.auth = null;
+    this.client = null;
+    this.isInitialized = false;
+
+    if (this.provider === 'vertex') {
+      // Vertex AI mode: billed through aiplatform.googleapis.com on the
+      // configured Google Cloud project. Auth is Application Default
+      // Credentials (gcloud auth application-default login); no API key.
+      const { project, location } = gemini.vertex;
+      if (!project) {
+        logger.warn('Vertex mode requires GOOGLE_CLOUD_PROJECT', { location });
+        return;
+      }
+
+      try {
+        const { GoogleAuth } = require('google-auth-library');
+        this.auth = new GoogleAuth({
+          projectId: project,
+          scopes: ['https://www.googleapis.com/auth/cloud-platform']
+        });
+        this.client = new GoogleGenAI({ vertexai: true, project, location });
+        this.vertex = { project, location };
+        this.model = gemini.model;
+        this.isInitialized = true;
+
+        logger.info('Gemini client initialized (Vertex AI)', {
+          project,
+          location,
+          host: this._apiHost(),
+          model: this.model
+        });
+      } catch (error) {
+        logger.error('Failed to initialize Vertex AI client', { error: error.message });
+      }
+      return;
+    }
+
     const apiKey = config.getApiKey('GEMINI');
-    
+
     if (!apiKey || apiKey === 'your-api-key-here') {
-      logger.warn('Gemini API key not configured', { 
+      logger.warn('Gemini API key not configured', {
         keyExists: !!apiKey,
         isPlaceholder: apiKey === 'your-api-key-here'
       });
@@ -27,19 +67,113 @@ class LLMService {
 
     try {
       this.client = new GoogleGenAI({ apiKey });
-      
+
       // Use the configured model name (default: gemini-3.5-flash)
-      this.model = config.get('llm.gemini.model');
+      this.model = gemini.model;
       this.isInitialized = true;
-      
+
       logger.info('Gemini AI client initialized successfully', {
         model: this.model
       });
     } catch (error) {
-      logger.error('Failed to initialize Gemini client', { 
-        error: error.message 
+      logger.error('Failed to initialize Gemini client', {
+        error: error.message
       });
     }
+  }
+
+  isVertex() {
+    return this.provider === 'vertex';
+  }
+
+  /** Hostname the raw HTTPS paths talk to for the active provider. */
+  _apiHost() {
+    if (this.isVertex()) {
+      const location = (this.vertex && this.vertex.location) || 'global';
+      return location === 'global'
+        ? 'aiplatform.googleapis.com'
+        : `${location}-aiplatform.googleapis.com`;
+    }
+    return 'generativelanguage.googleapis.com';
+  }
+
+  /** Full URL for a model method (generateContent / streamGenerateContent). */
+  _modelUrl(modelName, method) {
+    if (this.isVertex()) {
+      const { project, location } = this.vertex;
+      return `https://${this._apiHost()}/v1/projects/${project}/locations/${location}/publishers/google/models/${modelName}:${method}`;
+    }
+    return `https://${this._apiHost()}/v1beta/models/${modelName}:${method}`;
+  }
+
+  /** Auth headers: ADC bearer token on Vertex, API key on AI Studio. */
+  async _authHeaders(apiKey) {
+    if (this.isVertex()) {
+      if (!this.auth) {
+        throw new Error('Vertex AI auth not initialized');
+      }
+      const token = await this.auth.getAccessToken();
+      if (!token) {
+        throw new Error('Could not obtain Google Cloud access token. Run: gcloud auth application-default login');
+      }
+      return { Authorization: `Bearer ${token}` };
+    }
+    return { 'x-goog-api-key': apiKey || config.getApiKey('GEMINI') };
+  }
+
+  /**
+   * Adapt the generation config to what the target model accepts. Gemini 3.x
+   * on Vertex ignores temperature/topK/topP and replaced the integer
+   * thinkingBudget with a thinkingLevel enum; sending the old fields can
+   * trigger validation errors there. AI Studio requests are left untouched.
+   */
+  _prepareGenerationConfig(generationConfig, modelName) {
+    if (!generationConfig || !this.isVertex()) return generationConfig;
+    const model = String(modelName);
+    const configured = String(config.get('llm.gemini.vertexThinkingLevel') || '').toUpperCase();
+
+    if (/^gemini-3/.test(model)) {
+      // Gemini 3.x: sampling params are ignored and thinking is a level enum.
+      // Flash-Lite accepts MINIMAL (no reasoning); Flash and Pro reject it,
+      // so LOW is their floor.
+      const { temperature, topK, topP, thinkingConfig, ...rest } = generationConfig;
+      const isLite = /-lite/.test(model);
+      let level = configured;
+      if (!level || level === 'OFF' || level === 'MINIMAL') level = isLite ? 'MINIMAL' : 'LOW';
+      return { ...rest, thinkingConfig: { thinkingLevel: level } };
+    }
+
+    // Gemini 2.x: integer thinking budget. Unset keeps the app default
+    // (thinkingBudget 0). -1 lets the model decide (max reasoning).
+    if (!configured) return generationConfig;
+    const isPro = /-pro/.test(model);
+    const budgets = { OFF: isPro ? 128 : 0, MINIMAL: isPro ? 128 : 0, LOW: 1024, MEDIUM: 4096, HIGH: -1 };
+    const budget = budgets[configured];
+    if (budget === undefined) return generationConfig;
+    return { ...generationConfig, thinkingConfig: { thinkingBudget: budget } };
+  }
+
+  /** Request body for the raw HTTPS paths (same shape on both providers). */
+  _prepareWireRequest(geminiRequest, modelName) {
+    const body = { ...geminiRequest };
+    if (body.generationConfig) {
+      body.generationConfig = this._prepareGenerationConfig(body.generationConfig, modelName);
+    }
+    return body;
+  }
+
+  /** Parameters for the @google/genai SDK call (systemInstruction lives in config). */
+  _sdkParams(geminiRequest, modelName) {
+    const generation = this._prepareGenerationConfig(geminiRequest.generationConfig, modelName) || {};
+    const params = {
+      model: modelName,
+      contents: geminiRequest.contents,
+      config: { ...generation }
+    };
+    if (geminiRequest.systemInstruction) {
+      params.config.systemInstruction = geminiRequest.systemInstruction;
+    }
+    return params;
   }
 
   getGenerationConfig(overrides = {}) {
@@ -298,6 +432,9 @@ class LLMService {
   }
 
   formatImageInstruction(activeSkill, programmingLanguage) {
+    if (String(activeSkill).toLowerCase() === 'aptitude') {
+      return 'This is a screenshot of an aptitude test question. Read it and reply with the answer first, in the required format, then one short justification line.';
+    }
     const langNote = programmingLanguage ? ` Use only ${programmingLanguage.toUpperCase()} for any code.` : '';
     return `Analyze this image for a ${activeSkill.toUpperCase()} question. Extract the problem concisely and provide the best possible solution with explanation and final code.${langNote}`;
   }
@@ -871,12 +1008,9 @@ Remember: Be intelligent about filtering - only provide detailed responses when 
             model: modelName
           });
 
-          const requestPromise = this.client.models.generateContent({
-            model: modelName,
-            contents: geminiRequest.contents,
-            config: geminiRequest.generationConfig,
-            systemInstruction: geminiRequest.systemInstruction
-          });
+          const requestPromise = this.client.models.generateContent(
+            this._sdkParams(geminiRequest, modelName)
+          );
           const result = await Promise.race([requestPromise, timeoutPromise]);
 
           if (!result) {
@@ -1112,18 +1246,19 @@ Remember: Be intelligent about filtering - only provide detailed responses when 
     throw lastError || new Error('Gemini streaming request failed');
   }
 
-  _streamRequestForModel(geminiRequest, modelName, apiKey, onDelta) {
+  async _streamRequestForModel(geminiRequest, modelName, apiKey, onDelta) {
     const https = require('https');
     const timeout = config.get('llm.gemini.timeout');
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:streamGenerateContent?alt=sse`;
-    const postData = JSON.stringify(geminiRequest);
+    const url = `${this._modelUrl(modelName, 'streamGenerateContent')}?alt=sse`;
+    const postData = JSON.stringify(this._prepareWireRequest(geminiRequest, modelName));
     const agent = new https.Agent({ keepAlive: true, maxSockets: 1 });
+    const authHeaders = await this._authHeaders(apiKey);
 
     const options = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
+        ...authHeaders,
         'Content-Length': Buffer.byteLength(postData),
         'User-Agent': this.getUserAgent()
       },
@@ -1192,10 +1327,10 @@ Remember: Be intelligent about filtering - only provide detailed responses when 
     // Quick connectivity check
     try {
       const startTime = Date.now();
-      await this.testNetworkConnection({ 
-        host: 'generativelanguage.googleapis.com', 
-        port: 443, 
-        name: 'Gemini API Endpoint' 
+      await this.testNetworkConnection({
+        host: this._apiHost(),
+        port: 443,
+        name: 'Gemini API Endpoint'
       });
       const latency = Date.now() - startTime;
       
@@ -1278,7 +1413,7 @@ Remember: Be intelligent about filtering - only provide detailed responses when 
   async checkNetworkConnectivity() {
     const connectivityTests = [
       { host: 'google.com', port: 443, name: 'Google (HTTPS)' },
-      { host: 'generativelanguage.googleapis.com', port: 443, name: 'Gemini API Endpoint' }
+      { host: this._apiHost(), port: 443, name: 'Gemini API Endpoint' }
     ];
 
     const results = await Promise.allSettled(
@@ -1417,7 +1552,7 @@ Remember: Be intelligent about filtering - only provide detailed responses when 
           result = await this.client.models.generateContent({
             model: modelName,
             contents: 'Test connection. Please respond with "OK".',
-            config: generationConfig
+            config: this._prepareGenerationConfig(generationConfig, modelName)
           });
           usedModel = modelName;
           const latency = Date.now() - startTime;
@@ -1490,7 +1625,11 @@ Remember: Be intelligent about filtering - only provide detailed responses when 
     if (type === 'NETWORK_ERROR' || raw.includes('fetch failed') || raw.includes('enotfound')) {
       return 'Cannot reach Google servers. Check your internet connection, firewall, or VPN settings.';
     }
-    if (type === 'AUTH_ERROR' || raw.includes('api key') || raw.includes('401') || raw.includes('403')) {
+    if (type === 'AUTH_ERROR' || raw.includes('api key') || raw.includes('401') || raw.includes('403')
+        || raw.includes('could not load the default credentials') || raw.includes('access token')) {
+      if (this.isVertex()) {
+        return 'Vertex AI authentication failed. Run "gcloud auth application-default login", check GOOGLE_CLOUD_PROJECT, and make sure aiplatform.googleapis.com is enabled on the project.';
+      }
       return 'Invalid API key or insufficient permissions. Double-check the key at aistudio.google.com/apikey.';
     }
     if (type === 'RATE_LIMIT_ERROR' || raw.includes('429') || raw.includes('quota')) {
@@ -1520,6 +1659,9 @@ Remember: Be intelligent about filtering - only provide detailed responses when 
   getStats() {
     return {
       isInitialized: this.isInitialized,
+      provider: this.provider || 'studio',
+      endpoint: this.isInitialized ? this._apiHost() : null,
+      model: this.model,
       requestCount: this.requestCount,
       errorCount: this.errorCount,
       successRate: this.requestCount > 0 ? ((this.requestCount - this.errorCount) / this.requestCount) * 100 : 0,
@@ -1569,17 +1711,18 @@ Remember: Be intelligent about filtering - only provide detailed responses when 
   async _executeAlternativeRequestForModel(geminiRequest, modelName, apiKey) {
     const https = require('https');
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
+    const url = this._modelUrl(modelName, 'generateContent');
 
-    const postData = JSON.stringify(geminiRequest);
+    const postData = JSON.stringify(this._prepareWireRequest(geminiRequest, modelName));
 
     const agent = new https.Agent({ keepAlive: true, maxSockets: 1 });
+    const authHeaders = await this._authHeaders(apiKey);
 
     const options = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
+        ...authHeaders,
         'Content-Length': Buffer.byteLength(postData),
         'User-Agent': this.getUserAgent()
       },

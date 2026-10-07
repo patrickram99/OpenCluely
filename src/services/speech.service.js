@@ -1,6 +1,9 @@
 // Enhanced polyfills for Azure Speech SDK in Node.js environment
 if (typeof window === 'undefined') {
   global.window = {
+    // Libraries that detect a browser via `window` (e.g. gaxios, used by
+    // google-auth-library) then call `window.fetch`. Delegate to the real one.
+    fetch: (...args) => globalThis.fetch(...args),
     navigator: {
       userAgent: 'Node.js',
       platform: 'node',
@@ -351,9 +354,13 @@ if (typeof window === 'undefined') {
   global.navigator = global.window.navigator;
   global.AudioContext = global.window.AudioContext;
   global.webkitAudioContext = global.window.webkitAudioContext;
-  global.URL = global.window.URL;
-  global.Blob = global.window.Blob;
-  global.File = global.window.File;
+  // Never replace the real URL / Blob / File globals: Node and Electron ship
+  // them, and the stub URL below reports every host as "localhost", which
+  // silently breaks every fetch() in the main process (google-auth-library,
+  // @google/genai, ...). Only fill them in on runtimes that lack them.
+  if (typeof global.URL === 'undefined') global.URL = global.window.URL;
+  if (typeof global.Blob === 'undefined') global.Blob = global.window.Blob;
+  if (typeof global.File === 'undefined') global.File = global.window.File;
 
   if (!global.performance) {
     global.performance = {

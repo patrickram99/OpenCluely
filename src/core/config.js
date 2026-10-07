@@ -40,8 +40,25 @@ class ConfigManager {
 
       llm: {
         gemini: {
+          // provider / model / vertex are filled by refreshGeminiSettings()
+          // from the environment so they can be re-read after .env changes.
+          provider: 'studio',
           model: 'gemini-3.1-flash-lite',
           fallbackModels: ['gemini-2.5-flash-lite', 'gemini-3.5-flash'],
+          vertex: { project: '', location: 'global' },
+          // Gemini 3.x on Vertex replaced the integer thinkingBudget with a
+          // thinkingLevel enum. Empty = pick per model (MINIMAL on Flash-Lite,
+          // LOW on Flash); GEMINI_THINKING_LEVEL in .env forces a value.
+          vertexThinkingLevel: '',
+          // Presets selectable from the overlay. Selecting one writes
+          // GEMINI_PRESET + GEMINI_MODEL + GEMINI_THINKING_LEVEL to .env.
+          // thinking: OFF | MINIMAL | LOW | MEDIUM | HIGH (see llm.service
+          // _prepareGenerationConfig for how each model family maps it).
+          presets: {
+            fast: { label: 'Fast', model: 'gemini-2.5-flash', thinking: 'OFF' },
+            balanced: { label: 'Medium', model: 'gemini-3.6-flash', thinking: 'LOW' },
+            power: { label: 'Power', model: 'gemini-3.1-pro-preview', thinking: 'HIGH' }
+          },
           maxRetries: 3,
           timeout: 30000,
           fallbackEnabled: true,
@@ -103,6 +120,50 @@ class ConfigManager {
         disguiseProcess: true
       }
     };
+
+    this.refreshGeminiSettings();
+  }
+
+  /**
+   * Re-read the Gemini provider settings from the environment.
+   *
+   *   GEMINI_PROVIDER        studio (default, AI Studio API key) | vertex
+   *   GOOGLE_CLOUD_PROJECT   required in vertex mode
+   *   GOOGLE_CLOUD_LOCATION  vertex region, default "global"
+   *   GEMINI_MODEL           optional model override for either provider
+   *
+   * Called at load and again whenever the LLM client is (re)initialized so
+   * values written to .env at runtime are picked up without a restart.
+   */
+  refreshGeminiSettings() {
+    const gemini = this.config.llm.gemini;
+    const provider = String(process.env.GEMINI_PROVIDER || 'studio').trim().toLowerCase() === 'vertex'
+      ? 'vertex'
+      : 'studio';
+    const overrideModel = String(process.env.GEMINI_MODEL || '').trim();
+
+    gemini.provider = provider;
+    gemini.vertexThinkingLevel = String(process.env.GEMINI_THINKING_LEVEL || '').trim().toUpperCase();
+    gemini.vertex = {
+      project: String(process.env.GOOGLE_CLOUD_PROJECT || '').trim(),
+      location: String(process.env.GOOGLE_CLOUD_LOCATION || 'global').trim() || 'global'
+    };
+
+    if (provider === 'vertex') {
+      // Newest GA Flash on Vertex AI (text + image, global endpoint).
+      gemini.model = overrideModel || 'gemini-3.8-flash';
+      gemini.fallbackModels = ['gemini-3.7-flash', 'gemini-2.5-flash']
+        .filter(m => m !== gemini.model);
+    } else {
+      gemini.model = overrideModel || 'gemini-3.1-flash-lite';
+      gemini.fallbackModels = ['gemini-2.5-flash-lite', 'gemini-3.5-flash']
+        .filter(m => m !== gemini.model);
+    }
+    return gemini;
+  }
+
+  isVertexMode() {
+    return this.config.llm.gemini.provider === 'vertex';
   }
 
   get(keyPath) {

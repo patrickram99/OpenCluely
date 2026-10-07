@@ -78,6 +78,7 @@ app.commandLine.appendSwitch("no-pings");
 const logger = require("./src/core/logger").createServiceLogger("MAIN");
 const config = require("./src/core/config");
 const FirstRunManager = require("./src/core/first-run");
+const CaptureStore = require("./src/core/capture-store");
 
 // ── Global crash guard ──
 // The speech path spawns external processes (Whisper CLI, and on macOS/Linux
@@ -112,7 +113,9 @@ class ApplicationController {
   constructor() {
     this.isReady = false;
     this.starting = false;
-    this.activeSkill = "dsa";
+    this.captureStore = new CaptureStore({ dataDir: config.get("app.dataDir"), logger });
+    // ACTIVE_SKILL in .env persists the choice made in Settings across restarts.
+    this.activeSkill = (process.env.ACTIVE_SKILL || "dsa").trim().toLowerCase() || "dsa";
   // Default to C++ so language is enforced from first run
   this.codingLanguage = "cpp";
     this.speechAvailable = false;
@@ -566,7 +569,7 @@ class ApplicationController {
       if (mainWindow) {
         // Enforce horizontal constraints: min ~one icon, max original width
         const minW = 60;
-        const maxW = windowManager.windowConfigs?.main?.width || 520;
+        const maxW = windowManager.windowConfigs?.main?.width || 680;
         const clampedWidth = Math.max(minW, Math.min(maxW, Math.round(width || minW)));
         try {
           // Match content size to the DOM so no extra transparent area remains
@@ -1030,6 +1033,7 @@ class ApplicationController {
   navigateSkill(direction) {
     const availableSkills = [
       "dsa",
+      "aptitude",
     ];
 
     const currentIndex = availableSkills.indexOf(this.activeSkill);
@@ -1084,6 +1088,9 @@ class ApplicationController {
         return;
       }
 
+      // Optional on-disk history (SAVE_CAPTURES=true): image first, answer later.
+      const captureBase = this.captureStore.saveImage(capture.imageBuffer, capture.mimeType || 'image/png');
+
       // Use image directly with LLM and active skill; do not send chat messages here
       const sessionHistory = sessionManager.getOptimizedHistory();
 
@@ -1111,6 +1118,15 @@ class ApplicationController {
         }
       );
       llmResult.metadata = { ...llmResult.metadata, messageId };
+
+      this.captureStore.saveResponse(captureBase, {
+        response: llmResult.response,
+        skill: this.activeSkill,
+        model: llmService.model,
+        provider: llmService.provider,
+        processingTime: llmResult.metadata.processingTime,
+        usedFallback: llmResult.metadata.usedFallback
+      });
 
       sessionManager.addModelResponse(llmResult.response, {
         skill: this.activeSkill,
@@ -1607,6 +1623,14 @@ class ApplicationController {
       whisperResponseTarget: process.env.WHISPER_RESPONSE_TARGET || "both",
       whisperSegmentMs: process.env.WHISPER_SEGMENT_MS || "4000",
       geminiKey: process.env.GEMINI_API_KEY || "",
+      // Read-only provider info so the UI can relax the API-key requirement
+      // in Vertex mode. These are configured via .env, not the settings UI.
+      geminiProvider: config.get("llm.gemini.provider") || "studio",
+      geminiModel: config.get("llm.gemini.model") || "",
+      modelPreset: process.env.GEMINI_PRESET || "",
+      modelPresets: config.get("llm.gemini.presets") || {},
+      googleCloudProject: process.env.GOOGLE_CLOUD_PROJECT || "",
+      googleCloudLocation: process.env.GOOGLE_CLOUD_LOCATION || "global",
 
       azureConfigured: !!process.env.AZURE_SPEECH_KEY && !!process.env.AZURE_SPEECH_REGION,
       speechAvailable: this.speechAvailable
@@ -1678,6 +1702,19 @@ class ApplicationController {
       if (settings.geminiKey !== undefined) {
         envUpdates.GEMINI_API_KEY = settings.geminiKey;
       }
+      if (settings.activeSkill) {
+        envUpdates.ACTIVE_SKILL = String(settings.activeSkill);
+      }
+      // Model preset chosen from the overlay: persist the preset key plus the
+      // concrete model / thinking level it maps to, then reinitialize the LLM.
+      const presets = config.get("llm.gemini.presets") || {};
+      const preset = settings.modelPreset ? presets[settings.modelPreset] : null;
+      const presetChanged = !!preset && process.env.GEMINI_PRESET !== settings.modelPreset;
+      if (preset) {
+        envUpdates.GEMINI_PRESET = settings.modelPreset;
+        envUpdates.GEMINI_MODEL = preset.model;
+        envUpdates.GEMINI_THINKING_LEVEL = preset.thinking;
+      }
 
       // Capture the previous whisper command BEFORE persisting — persistEnvUpdates
       // mutates process.env in place, so comparing afterwards would always read
@@ -1692,15 +1729,24 @@ class ApplicationController {
       // connection button in the onboarding wizard fails with
       // "Service not initialized" because the client was first created
       // at app startup, before any key was set.
-      if (settings.geminiKey !== undefined && envUpdates.GEMINI_API_KEY !== undefined) {
+      if ((settings.geminiKey !== undefined && envUpdates.GEMINI_API_KEY !== undefined) || presetChanged) {
         try {
           llmService.initializeClient();
-          logger.info("LLM service reinitialized after Gemini key update");
+          logger.info("LLM service reinitialized after settings update", {
+            model: llmService.model,
+            preset: process.env.GEMINI_PRESET || null
+          });
         } catch (e) {
-          logger.warn("Failed to reinitialize LLM service after Gemini key update", {
+          logger.warn("Failed to reinitialize LLM service after settings update", {
             error: e.message
           });
         }
+      }
+      if (presetChanged) {
+        windowManager.broadcastToAllWindows("model-preset-changed", {
+          preset: settings.modelPreset,
+          model: preset.model
+        });
       }
 
       // Reinitialize speech service when provider OR whisper command

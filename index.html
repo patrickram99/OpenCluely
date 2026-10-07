@@ -27,8 +27,8 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        gap: 16px;
-        padding: 0 12px;
+        gap: 10px;
+        padding: 0 10px;
         color: rgba(255, 255, 255, 0.9);
         font-size: 11px;
         font-weight: 600;
@@ -44,8 +44,8 @@
       .command-item {
         display: flex;
         align-items: center;
-        gap: 8px;
-        padding: 6px 10px;
+        gap: 6px;
+        padding: 6px 8px;
         border-radius: 6px;
         color: rgba(255, 255, 255, 0.9);
         font-size: 12px;
@@ -375,6 +375,15 @@
           <option value="python">Python</option>
           <option value="java">Java</option>
           <option value="javascript">JavaScript</option>
+        </select>
+      </div>
+      <div class="command-separator"></div>
+      <div class="command-item" id="modelSelector" title="Model: Fast (no reasoning) / Medium / Power (deep reasoning, slow)">
+        <i class="fas fa-microchip"></i>
+        <select id="modelPreset">
+          <option value="fast">Fast</option>
+          <option value="balanced">Medium</option>
+          <option value="power">Power</option>
         </select>
       </div>
       <div class="command-separator"></div>

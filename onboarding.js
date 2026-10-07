@@ -659,7 +659,19 @@
   // a partial config don't have to retype.
   if (window.electronAPI && window.electronAPI.getFirstRunStatus) {
     window.electronAPI.getFirstRunStatus().then((s) => {
-      if (s && s.geminiConfigured) {
+      if (s && s.geminiProvider === 'vertex') {
+        // Vertex AI mode authenticates with Application Default
+        // Credentials; no API key is needed, so don't block on it.
+        state.geminiConfigured = !!s.geminiConfigured;
+        geminiInput.placeholder = 'Not needed in Vertex AI mode';
+        geminiInput.disabled = true;
+        setKeyStatus(
+          state.geminiConfigured ? 'success' : 'error',
+          state.geminiConfigured
+            ? `Vertex AI mode (project ${s.googleCloudProject}) — click Continue`
+            : 'Vertex AI mode: set GOOGLE_CLOUD_PROJECT in .env'
+        );
+      } else if (s && s.geminiConfigured) {
         // We can't read the key back (settings returns empty for keys),
         // but we can mark status as success if the env file already has one
         // and let the user advance without retyping it.

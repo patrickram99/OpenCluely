@@ -335,6 +335,39 @@ class MainWindowUI {
             }
         });
 
+        // Model preset dropdown (Fast / Medium / Power). Persisted via
+        // saveSettings -> .env, and the main process swaps the Gemini model.
+        this.modelSelect = document.getElementById('modelPreset');
+        if (this.modelSelect) {
+            if (window.electronAPI && window.electronAPI.getSettings) {
+                window.electronAPI.getSettings().then(settings => {
+                    const presets = (settings && settings.modelPresets) || {};
+                    Object.entries(presets).forEach(([key, p]) => {
+                        const opt = this.modelSelect.querySelector(`option[value="${key}"]`);
+                        if (opt && p && p.label) opt.textContent = p.label;
+                        if (opt && p && p.model) opt.title = `${p.model} (${p.thinking})`;
+                    });
+                    if (settings && settings.modelPreset && presets[settings.modelPreset]) {
+                        this.modelSelect.value = settings.modelPreset;
+                    }
+                }).catch(() => {});
+            }
+
+            this.modelSelect.addEventListener('change', (e) => {
+                const preset = e.target.value;
+                if (window.electronAPI && window.electronAPI.saveSettings) {
+                    window.electronAPI.saveSettings({ modelPreset: preset });
+                }
+                setTimeout(() => {
+                    const commandTab = document.querySelector('.command-tab');
+                    if (commandTab && window.electronAPI && window.electronAPI.resizeWindow) {
+                        const rect = commandTab.getBoundingClientRect();
+                        window.electronAPI.resizeWindow(Math.ceil(rect.width), Math.ceil(rect.height));
+                    }
+                }, 50);
+            });
+        }
+
         // Language dropdown
         this.languageSelect = document.getElementById('codingLanguage');
         if (this.languageSelect) {
@@ -527,9 +560,10 @@ class MainWindowUI {
             'programming': 'Programming',
             'devops': 'DevOps',
             'system-design': 'System Design',
-            'negotiation': 'Negotiation'
+            'negotiation': 'Negotiation',
+            'aptitude': 'Aptitude'
         };
-        
+
         const displaySkill = skillNames[skill] || skill.toUpperCase();
         
         logger.info('LLM response received', {
